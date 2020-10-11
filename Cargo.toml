@@ -1,0 +1,25 @@
+[package]
+name = "sentry-tracing"
+version = "0.20.1"
+authors = ["Luke Frisken <l.frisken@gmail.com>", "Sentry <hello@sentry.io>"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/kellpossible/sentry-tracing"
+description = """
+Sentry integration for the tracing crate
+"""
+edition = "2018"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+eyre = "0.6"
+# TODO: remove client dependency when resolved: https://github.com/getsentry/sentry-rust/issues/278
+sentry-core = { version = "0.20.1", features = ["client"] }
+sentry-backtrace = "0.20"
+tracing = "0.1"
+tracing-subscriber = "0.2"
+
+# [dev-dependencies]
+# sentry = { version = "0.20.1", default-features = false, features = ["test"] }
