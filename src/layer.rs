@@ -16,7 +16,7 @@ impl <S: Subscriber> Layer<S> for SentryLayer {
     fn on_event(&self, event: &Event<'_>, context: Context<'_, S>) {
         let recorded = sentry_core::with_integration(|integration: &TracingIntegration, hub: &Hub| {
             if integration.create_issue_for_event(event) {
-                hub.capture_event(convert_tracing_event(event, &context, integration.attach_stacktraces));
+                hub.capture_event(convert_tracing_event(event, &context, integration));
             }
             print!("sentry captured event");
             true

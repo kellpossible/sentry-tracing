@@ -5,17 +5,19 @@ use sentry_core::{ClientOptions, Integration};
 /// Logger specific options.
 #[derive(Debug)]
 pub struct TracingIntegration {
-    /// The sentry specific tracing span/event level filter (defaults to `Info`)
+    /// The sentry specific tracing span/event level filter (defaults to `Info`).
     pub filter: EnvFilter,
-    /// If set to `true`, breadcrumbs will be emitted. (defaults to `true`)
+    /// If set to `true`, breadcrumbs will be emitted. (defaults to `true`).
     pub emit_breadcrumbs: bool,
-    /// If set to `true` error events will be sent for errors in the log. (defaults to `true`)
+    /// If set to `true` error events will be sent for errors in the log. (defaults to `true`).
     pub emit_error_events: bool,
-    /// If set to `true` warning events will be sent for warnings in the log. (defaults to `false`)
+    /// If set to `true` warning events will be sent for warnings in the log. (defaults to `false`).
     pub emit_warning_events: bool,
     /// If set to `true` current stacktrace will be resolved and attached
-    /// to each event. (expensive, defaults to `true`)
+    /// to each event. (expensive, defaults to `true`).
     pub attach_stacktraces: bool,
+    /// Strip ansi escape sequences from string values, and formatted error messages.
+    pub strip_ansi_escapes: bool,
 }
 
 impl Integration for TracingIntegration {
@@ -51,6 +53,7 @@ impl Default for TracingIntegration {
             emit_error_events: true,
             emit_warning_events: false,
             attach_stacktraces: true,
+            strip_ansi_escapes: false,
         }
     }
 }
