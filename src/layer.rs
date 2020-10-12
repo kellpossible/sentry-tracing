@@ -1,4 +1,4 @@
-use crate::{TracingIntegration, converters::convert_tracing_event};
+use crate::{TracingIntegration, breadcrumb_from_event, converters::convert_tracing_event};
 
 use sentry_core::Hub;
 use tracing::{Event, Subscriber, span};
@@ -18,7 +18,11 @@ impl <S: Subscriber> Layer<S> for SentryLayer {
             if integration.create_issue_for_event(event) {
                 hub.capture_event(convert_tracing_event(event, &context, integration));
             }
-            print!("sentry captured event");
+            
+            if integration.emit_breadcrumbs && integration.filter.enabled(event.metadata(), context) {
+                sentry_core::add_breadcrumb(|| breadcrumb_from_event(event, integration));
+            }
+
             true
         });
 

@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use eyre::Context;
 use sentry_backtrace::current_stacktrace;
 use sentry_core::protocol::{Event, Exception};
 use sentry_core::Breadcrumb;
@@ -17,23 +16,23 @@ fn convert_tracing_level(level: &tracing::Level) -> sentry_core::Level {
     }
 }
 
+#[derive(Default)]
 struct FieldVisitorConfig {
-    /// Strip ansi escape sequences from string values, and formatted error messages.
+    /// If set to true, ansi escape sequences will be stripped from
+    /// string values, and formatted error/debug values.
     pub strip_ansi_escapes: bool,
-}
-
-impl Default for FieldVisitorConfig {
-    fn default() -> Self {
-        Self {
-            strip_ansi_escapes: false,
-        }
-    }
+    /// 
+    /// If `Some`, values for tracing events with the field name
+    /// matching what is specified here will be included in the event
+    /// type string: "[target](event_type) tracing event".
+    pub event_type_field: Option<String>,
 }
 
 impl From<&TracingIntegration> for FieldVisitorConfig {
     fn from(integration: &TracingIntegration) -> Self {
         Self {
             strip_ansi_escapes: integration.strip_ansi_escapes,
+            event_type_field: integration.event_type_field.clone(),
         }
     }
 }
@@ -43,6 +42,7 @@ struct FieldVisitorResult {
     pub display_values: Vec<String>,
     pub json_values: BTreeMap<String, serde_json::Value>,
     pub log_target: Option<String>,
+    pub event_type: Option<String>,
 }
 
 impl FieldVisitorResult {
@@ -80,7 +80,12 @@ impl FieldVisitor {
         }
     }
 
-    fn record_message(&mut self, field: &Field, value: &str) {
+    fn record_value_message(&mut self, field: &Field, value: &str) {
+        if let Some(field_name) = &self.config.event_type_field {
+            if field.name() == field_name { 
+                self.result.event_type = Some(value.to_owned());
+            }
+        }
         self.result.display_values.push(format!("{}={}", field, value));
     }
 }
@@ -101,19 +106,19 @@ impl tracing::field::Visit for FieldVisitor {
     /// Visit a signed 64-bit integer value.
     fn record_i64(&mut self, field: &Field, value: i64) {
         self.record_json_value(field, &value);
-        self.record_message(field, &format!("{:?}", value));
+        self.record_value_message(field, &format!("{:?}", value));
     }
 
     /// Visit an unsigned 64-bit integer value.
     fn record_u64(&mut self, field: &Field, value: u64) {
         self.record_json_value(field, &value);
-        self.record_message(field, &&format!("{:?}", value));
+        self.record_value_message(field, &&format!("{:?}", value));
     }
 
     /// Visit a boolean value.
     fn record_bool(&mut self, field: &Field, value: bool) {
         self.record_json_value(field, &value);
-        self.record_message(field, &&format!("{:?}", value));
+        self.record_value_message(field, &&format!("{:?}", value));
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
@@ -128,7 +133,7 @@ impl tracing::field::Visit for FieldVisitor {
         }
 
         self.record_json_value(field, &value);
-        self.record_message(field, &value);
+        self.record_value_message(field, &value);
     }
     
     fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
@@ -140,7 +145,7 @@ impl tracing::field::Visit for FieldVisitor {
         };
 
         self.record_json_value(field, &message_string);
-        self.record_message(field, &message_string);
+        self.record_value_message(field, &message_string);
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
@@ -152,12 +157,12 @@ impl tracing::field::Visit for FieldVisitor {
         };
 
         self.record_json_value(field, &message_string);
-        self.record_message(field, &message_string);
+        self.record_value_message(field, &message_string);
     }
 }
 
 /// Creates a breadcrumb from a given tracing event.
-pub fn breadcrumb_from_event<S: tracing::Subscriber>(event: &tracing::Event<'_>, context: &tracing_subscriber::layer::Context<'_, S>, integration: &TracingIntegration) -> Breadcrumb {
+pub fn breadcrumb_from_event(event: &tracing::Event<'_>, integration: &TracingIntegration) -> Breadcrumb {
     let visitor_result = FieldVisitor::visit_event(event, integration.into());
 
     Breadcrumb {
@@ -178,15 +183,24 @@ pub fn convert_tracing_event<S: tracing::Subscriber>(event: &tracing::Event<'_>,
     let visitor_result = FieldVisitor::visit_event(event, integration.into());
 
     // Special support for log.target reported by tracing-log
-    // TODO: add support for rendering event `type` field
-    let exception_type = match &visitor_result.log_target {
+    let (exception_target, exception_source) = match &visitor_result.log_target {
         Some(log_target) => {
-            format!("[{}] log event", log_target)
+            (log_target.as_str(), "log event")
         }
         None => {
-            format!("[{}] tracing event", event.metadata().target())
+            (event.metadata().target(), "tracing event")
         }
     };
+
+    let mut exception_type = String::new();
+    exception_type.push_str(&format!("[{}]", exception_target));
+
+    if let Some(event_type) = &visitor_result.event_type {
+        exception_type.push_str(&format!("({})", event_type));
+    }
+
+    exception_type.push(' ');
+    exception_type.push_str(exception_source);
 
     Event {
         logger: Some("sentry-tracing".into()),
