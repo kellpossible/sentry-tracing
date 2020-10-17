@@ -25,27 +25,6 @@ pub struct TracingIntegrationOptions {
     pub event_type_field: Option<String>,
 }
 
-/// A Sentry [Integration] for capturing events/spans from the
-/// `tracing` framework.
-pub struct TracingIntegration {
-    pub(crate) options: TracingIntegrationOptions
-}
-
-impl Integration for TracingIntegration {
-    fn name(&self) -> &'static str {
-        "tracing"
-    }
-
-    fn setup(&self, cfg: &mut ClientOptions) {
-        cfg.in_app_exclude.push("tracing_core::");
-        cfg.in_app_exclude.push("tracing_log::");
-        cfg.in_app_exclude.push("log::");
-        cfg.extra_border_frames
-            .push("tracing_core::event::Event::dispatch");
-        cfg.extra_border_frames.push("log::__private_api_log");
-    }
-}
-
 impl Default for TracingIntegrationOptions {
     fn default() -> Self {
         Self {
@@ -60,7 +39,20 @@ impl Default for TracingIntegrationOptions {
     }
 }
 
+/// A Sentry [Integration] for capturing events/spans from the
+/// `tracing` framework.
+pub struct TracingIntegration {
+    pub(crate) options: TracingIntegrationOptions
+}
+
 impl TracingIntegration {
+    /// Create a new [TracingIntegration] with the specified `options`.
+    pub fn new(options: TracingIntegrationOptions) -> Self {
+        Self {
+            options
+        }
+    }
+
     /// Checks if an issue should be created.
     pub(crate) fn create_issue_for_event(&self, event: &tracing::Event<'_>) -> bool {
         match event.metadata().level() {
@@ -68,5 +60,27 @@ impl TracingIntegration {
             &Level::ERROR => self.options.emit_error_events,
             _ => false,
         }
+    }
+}
+
+impl Default for TracingIntegration {
+    fn default() -> Self {
+        Self::new(TracingIntegrationOptions::default())
+    }
+}
+
+
+impl Integration for TracingIntegration {
+    fn name(&self) -> &'static str {
+        "tracing"
+    }
+
+    fn setup(&self, cfg: &mut ClientOptions) {
+        cfg.in_app_exclude.push("tracing_core::");
+        cfg.in_app_exclude.push("tracing_log::");
+        cfg.in_app_exclude.push("log::");
+        cfg.extra_border_frames
+            .push("tracing_core::event::Event::dispatch");
+        cfg.extra_border_frames.push("log::__private_api_log");
     }
 }
