@@ -17,13 +17,13 @@ impl<S: Subscriber> Layer<S> for SentryLayer {
         let recorded =
             sentry_core::with_integration(|integration: &TracingIntegration, hub: &Hub| {
                 if integration.create_issue_for_event(event) {
-                    hub.capture_event(convert_tracing_event(event, &integration.config));
+                    hub.capture_event(convert_tracing_event(event, &integration.options));
                 }
 
-                if integration.config.emit_breadcrumbs
-                    && integration.config.filter.enabled(event.metadata(), context)
+                if integration.options.emit_breadcrumbs
+                    && integration.options.filter.enabled(event.metadata(), context)
                 {
-                    sentry_core::add_breadcrumb(|| breadcrumb_from_event(event, &integration.config));
+                    sentry_core::add_breadcrumb(|| breadcrumb_from_event(event, &integration.options));
                 }
 
                 true
