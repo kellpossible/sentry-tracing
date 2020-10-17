@@ -1,10 +1,10 @@
+use sentry_core::{ClientOptions, Integration};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-use sentry_core::{ClientOptions, Integration};
 
-/// Logger specific options.
+/// Integration that performs 
 #[derive(Debug)]
-pub struct TracingIntegration {
+pub struct TracingIntegrationConfig {
     /// The sentry specific tracing span/event level filter (defaults to `info`).
     pub filter: EnvFilter,
     /// If set to `true`, breadcrumbs will be emitted. (defaults to `true`).
@@ -25,6 +25,12 @@ pub struct TracingIntegration {
     pub event_type_field: Option<String>,
 }
 
+/// A Sentry [Integration] for capturing events/spans from the
+/// `tracing` framework.
+pub struct TracingIntegration {
+    pub(crate) config: TracingIntegrationConfig
+}
+
 impl Integration for TracingIntegration {
     fn name(&self) -> &'static str {
         "tracing"
@@ -36,21 +42,11 @@ impl Integration for TracingIntegration {
         cfg.in_app_exclude.push("log::");
         cfg.extra_border_frames
             .push("tracing_core::event::Event::dispatch");
-        cfg.extra_border_frames
-            .push("log::__private_api_log");
-
-        // let filter = self.effective_global_filter();
-        // if filter > log::max_level() {
-        //     log::set_max_level(filter);
-        // }
-
-        // INIT.call_once(|| {
-        //     log::set_boxed_logger(Box::new(SentryLayer::default())).ok();
-        // });
+        cfg.extra_border_frames.push("log::__private_api_log");
     }
 }
 
-impl Default for TracingIntegration {
+impl Default for TracingIntegrationConfig {
     fn default() -> Self {
         Self {
             filter: EnvFilter::new("info"),
@@ -65,38 +61,11 @@ impl Default for TracingIntegration {
 }
 
 impl TracingIntegration {
-    /// Initializes an env logger as destination target.
-    #[cfg(feature = "env_logger")]
-    pub fn with_env_logger_dest(mut self, logger: Option<env_logger::Logger>) -> Self {
-        let logger = logger
-            .unwrap_or_else(|| env_logger::Builder::from_env(env_logger::Env::default()).build());
-        let filter = logger.filter();
-        if self.global_filter.is_none() {
-            self.global_filter = Some(filter);
-        }
-        self.dest_log = Some(Box::new(logger));
-        self
-    }
-
-    /// Returns the level for which issues should be created.
-    ///
-    /// This is controlled by `emit_error_events` and `emit_warning_events`.
-    // #[inline(always)]
-    // fn issue_filter(&self) -> EnvFilter {
-    //     if self.emit_warning_events {
-    //         LevelFilter::Warn
-    //     } else if self.emit_error_events {
-    //         LevelFilter::Error
-    //     } else {
-    //         LevelFilter::Off
-    //     }
-    // }
-
     /// Checks if an issue should be created.
     pub(crate) fn create_issue_for_event(&self, event: &tracing::Event<'_>) -> bool {
         match event.metadata().level() {
-            &Level::WARN => self.emit_warning_events,
-            &Level::ERROR => self.emit_error_events,
+            &Level::WARN => self.config.emit_warning_events,
+            &Level::ERROR => self.config.emit_error_events,
             _ => false,
         }
     }

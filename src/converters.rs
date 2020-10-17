@@ -5,7 +5,7 @@ use sentry_core::protocol::{Event, Exception};
 use sentry_core::Breadcrumb;
 use tracing::field::Field;
 
-use crate::TracingIntegration;
+use crate::TracingIntegrationConfig;
 
 fn convert_tracing_level(level: &tracing::Level) -> sentry_core::Level {
     match level {
@@ -21,15 +21,15 @@ struct FieldVisitorConfig {
     /// If set to true, ansi escape sequences will be stripped from
     /// string values, and formatted error/debug values.
     pub strip_ansi_escapes: bool,
-    /// 
+    ///
     /// If `Some`, values for tracing events with the field name
     /// matching what is specified here will be included in the event
     /// type string: "[target](event_type) tracing event".
     pub event_type_field: Option<String>,
 }
 
-impl From<&TracingIntegration> for FieldVisitorConfig {
-    fn from(integration: &TracingIntegration) -> Self {
+impl From<&TracingIntegrationConfig> for FieldVisitorConfig {
+    fn from(integration: &TracingIntegrationConfig) -> Self {
         Self {
             strip_ansi_escapes: integration.strip_ansi_escapes,
             event_type_field: integration.event_type_field.clone(),
@@ -71,22 +71,30 @@ impl FieldVisitor {
     fn record_json_value<S: serde::Serialize>(&mut self, field: &Field, value: &S) {
         match serde_json::to_value(value) {
             Ok(json_value) => {
-                self.result.json_values.insert(field.name().to_owned(), json_value);
-            },
+                self.result
+                    .json_values
+                    .insert(field.name().to_owned(), json_value);
+            }
             Err(error) => {
-                let error = eyre::eyre!("Error while serializing the \"{}\" field to json: {}", field.name(), error);
+                let error = eyre::eyre!(
+                    "Error while serializing the \"{}\" field to json: {}",
+                    field.name(),
+                    error
+                );
                 tracing::error!(error = ?error)
-            },
+            }
         }
     }
 
     fn record_value_message(&mut self, field: &Field, value: &str) {
         if let Some(field_name) = &self.config.event_type_field {
-            if field.name() == field_name { 
+            if field.name() == field_name {
                 self.result.event_type = Some(value.to_owned());
             }
         }
-        self.result.display_values.push(format!("{}={}", field, value));
+        self.result
+            .display_values
+            .push(format!("{}={}", field, value));
     }
 }
 
@@ -121,6 +129,7 @@ impl tracing::field::Visit for FieldVisitor {
         self.record_value_message(field, &&format!("{:?}", value));
     }
 
+    /// Visit an `&str` value.
     fn record_str(&mut self, field: &Field, value: &str) {
         let value = if self.config.strip_ansi_escapes {
             strip_ansi_codes_from_string(&value)
@@ -135,7 +144,8 @@ impl tracing::field::Visit for FieldVisitor {
         self.record_json_value(field, &value);
         self.record_value_message(field, &value);
     }
-    
+
+    /// Visit a type that implements `std::error::Error`.
     fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
         let formatted_value = format!("{:?}", value);
         let message_string = if self.config.strip_ansi_escapes {
@@ -148,6 +158,7 @@ impl tracing::field::Visit for FieldVisitor {
         self.record_value_message(field, &message_string);
     }
 
+    /// Visit a type that implements `std::fmt::Debug`.
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         let formatted_value = format!("{:?}", value);
         let message_string = if self.config.strip_ansi_escapes {
@@ -162,7 +173,10 @@ impl tracing::field::Visit for FieldVisitor {
 }
 
 /// Creates a breadcrumb from a given tracing event.
-pub fn breadcrumb_from_event(event: &tracing::Event<'_>, integration: &TracingIntegration) -> Breadcrumb {
+pub fn breadcrumb_from_event(
+    event: &tracing::Event<'_>,
+    integration: &TracingIntegrationConfig,
+) -> Breadcrumb {
     let visitor_result = FieldVisitor::visit_event(event, integration.into());
 
     Breadcrumb {
@@ -179,17 +193,16 @@ pub fn breadcrumb_from_event(event: &tracing::Event<'_>, integration: &TracingIn
 ///
 /// If `with_stacktrace` is set to `true` then a stacktrace is attached
 /// from the current frame.
-pub fn convert_tracing_event<S: tracing::Subscriber>(event: &tracing::Event<'_>, context: &tracing_subscriber::layer::Context<'_, S>, integration: &TracingIntegration) -> Event<'static> {
-    let visitor_result = FieldVisitor::visit_event(event, integration.into());
+pub fn convert_tracing_event(
+    event: &tracing::Event<'_>,
+    options: &TracingIntegrationConfig,
+) -> Event<'static> {
+    let visitor_result = FieldVisitor::visit_event(event, options.into());
 
     // Special support for log.target reported by tracing-log
     let (exception_target, exception_source) = match &visitor_result.log_target {
-        Some(log_target) => {
-            (log_target.as_str(), "log event")
-        }
-        None => {
-            (event.metadata().target(), "tracing event")
-        }
+        Some(log_target) => (log_target.as_str(), "log event"),
+        None => (event.metadata().target(), "tracing event"),
     };
 
     let mut exception_type = String::new();
@@ -208,7 +221,7 @@ pub fn convert_tracing_event<S: tracing::Subscriber>(event: &tracing::Event<'_>,
         exception: vec![Exception {
             ty: exception_type,
             value: Some(visitor_result.message()),
-            stacktrace: if integration.attach_stacktraces {
+            stacktrace: if options.attach_stacktraces {
                 current_stacktrace()
             } else {
                 None
