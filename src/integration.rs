@@ -4,7 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 /// Integration that performs 
 #[derive(Debug)]
-pub struct TracingIntegrationConfig {
+pub struct TracingIntegrationOptions {
     /// The sentry specific tracing span/event level filter (defaults to `info`).
     pub filter: EnvFilter,
     /// If set to `true`, breadcrumbs will be emitted. (defaults to `true`).
@@ -28,7 +28,7 @@ pub struct TracingIntegrationConfig {
 /// A Sentry [Integration] for capturing events/spans from the
 /// `tracing` framework.
 pub struct TracingIntegration {
-    pub(crate) config: TracingIntegrationConfig
+    pub(crate) options: TracingIntegrationOptions
 }
 
 impl Integration for TracingIntegration {
@@ -46,7 +46,7 @@ impl Integration for TracingIntegration {
     }
 }
 
-impl Default for TracingIntegrationConfig {
+impl Default for TracingIntegrationOptions {
     fn default() -> Self {
         Self {
             filter: EnvFilter::new("info"),
@@ -64,8 +64,8 @@ impl TracingIntegration {
     /// Checks if an issue should be created.
     pub(crate) fn create_issue_for_event(&self, event: &tracing::Event<'_>) -> bool {
         match event.metadata().level() {
-            &Level::WARN => self.config.emit_warning_events,
-            &Level::ERROR => self.config.emit_error_events,
+            &Level::WARN => self.options.emit_warning_events,
+            &Level::ERROR => self.options.emit_error_events,
             _ => false,
         }
     }

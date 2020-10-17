@@ -5,7 +5,7 @@ use sentry_core::protocol::{Event, Exception};
 use sentry_core::Breadcrumb;
 use tracing::field::Field;
 
-use crate::TracingIntegrationConfig;
+use crate::TracingIntegrationOptions;
 
 fn convert_tracing_level(level: &tracing::Level) -> sentry_core::Level {
     match level {
@@ -28,8 +28,8 @@ struct FieldVisitorConfig {
     pub event_type_field: Option<String>,
 }
 
-impl From<&TracingIntegrationConfig> for FieldVisitorConfig {
-    fn from(integration: &TracingIntegrationConfig) -> Self {
+impl From<&TracingIntegrationOptions> for FieldVisitorConfig {
+    fn from(integration: &TracingIntegrationOptions) -> Self {
         Self {
             strip_ansi_escapes: integration.strip_ansi_escapes,
             event_type_field: integration.event_type_field.clone(),
@@ -175,7 +175,7 @@ impl tracing::field::Visit for FieldVisitor {
 /// Creates a breadcrumb from a given tracing event.
 pub fn breadcrumb_from_event(
     event: &tracing::Event<'_>,
-    integration: &TracingIntegrationConfig,
+    integration: &TracingIntegrationOptions,
 ) -> Breadcrumb {
     let visitor_result = FieldVisitor::visit_event(event, integration.into());
 
@@ -195,7 +195,7 @@ pub fn breadcrumb_from_event(
 /// from the current frame.
 pub fn convert_tracing_event(
     event: &tracing::Event<'_>,
-    options: &TracingIntegrationConfig,
+    options: &TracingIntegrationOptions,
 ) -> Event<'static> {
     let visitor_result = FieldVisitor::visit_event(event, options.into());
 
