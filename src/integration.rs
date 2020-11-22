@@ -2,7 +2,7 @@ use sentry_core::{ClientOptions, Integration};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
-/// Integration that performs 
+/// Integration that performs
 #[derive(Debug)]
 pub struct TracingIntegrationOptions {
     /// The sentry specific tracing span/event level filter (defaults to `info`).
@@ -42,15 +42,13 @@ impl Default for TracingIntegrationOptions {
 /// A Sentry [Integration] for capturing events/spans from the
 /// `tracing` framework.
 pub struct TracingIntegration {
-    pub(crate) options: TracingIntegrationOptions
+    pub(crate) options: TracingIntegrationOptions,
 }
 
 impl TracingIntegration {
     /// Create a new [TracingIntegration] with the specified `options`.
     pub fn new(options: TracingIntegrationOptions) -> Self {
-        Self {
-            options
-        }
+        Self { options }
     }
 
     /// Checks if an issue should be created.
@@ -68,7 +66,6 @@ impl Default for TracingIntegration {
         Self::new(TracingIntegrationOptions::default())
     }
 }
-
 
 impl Integration for TracingIntegration {
     fn name(&self) -> &'static str {

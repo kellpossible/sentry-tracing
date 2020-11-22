@@ -21,9 +21,14 @@ impl<S: Subscriber> Layer<S> for SentryLayer {
                 }
 
                 if integration.options.emit_breadcrumbs
-                    && integration.options.filter.enabled(event.metadata(), context)
+                    && integration
+                        .options
+                        .filter
+                        .enabled(event.metadata(), context)
                 {
-                    sentry_core::add_breadcrumb(|| breadcrumb_from_event(event, &integration.options));
+                    sentry_core::add_breadcrumb(|| {
+                        breadcrumb_from_event(event, &integration.options)
+                    });
                 }
 
                 true
