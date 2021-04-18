@@ -53,9 +53,9 @@ impl TracingIntegration {
 
     /// Checks if an issue should be created.
     pub(crate) fn create_issue_for_event(&self, event: &tracing::Event<'_>) -> bool {
-        match event.metadata().level() {
-            &Level::WARN => self.options.emit_warning_events,
-            &Level::ERROR => self.options.emit_error_events,
+        match *event.metadata().level() {
+            Level::WARN => self.options.emit_warning_events,
+            Level::ERROR => self.options.emit_error_events,
             _ => false,
         }
     }
