@@ -9,13 +9,17 @@ use sentry_backtrace::current_stacktrace;
 use sentry_core::{
     event_from_error,
     protocol::Value,
-    protocol::{self, Event, Exception},
+    protocol::{self, Event, Exception, Transaction},
+    types::Uuid,
     Breadcrumb,
 };
-use tracing::{field::Field, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan};
+use tracing::{field::Field, span::Attributes, Subscriber};
+use tracing_subscriber::{
+    layer::Context,
+    registry::{LookupSpan, SpanRef},
+};
 
-use crate::layer::Trace;
+use crate::layer::{Timings, Trace};
 
 fn convert_tracing_level(level: &tracing::Level) -> sentry_core::Level {
     match level {
@@ -173,6 +177,20 @@ pub fn breadcrumb_from_event(
     }
 }
 
+pub(crate) fn default_convert_breadcrumb<S>(
+    event: &tracing::Event<'_>,
+    _ctx: Context<S>,
+) -> Breadcrumb {
+    breadcrumb_from_event(
+        event,
+        FieldVisitorConfig {
+            event_type_field: None,
+            #[cfg(features = "strip-ansi-escapes")]
+            strip_ansi_escapes: true,
+        },
+    )
+}
+
 /// Creates an event from a given log record.
 ///
 /// If `attach_stacktraces` is set to `true` then a stacktrace is attached
@@ -224,8 +242,8 @@ where
         let extensions = parent.extensions();
         if let Some(trace) = extensions.get::<Trace>() {
             let context = protocol::Context::from(TraceContext {
-                span_id: trace.span_id,
-                trace_id: trace.trace_id,
+                span_id: trace.span.span_id,
+                trace_id: trace.span.trace_id,
                 ..TraceContext::default()
             });
 
@@ -235,4 +253,92 @@ where
     }
 
     result
+}
+
+pub(crate) fn default_convert_event<S>(
+    event: &tracing::Event<'_>,
+    ctx: Context<S>,
+) -> Event<'static>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    convert_tracing_event(
+        event,
+        ctx,
+        true,
+        FieldVisitorConfig {
+            event_type_field: None,
+            #[cfg(features = "strip-ansi-escapes")]
+            strip_ansi_escapes: true,
+        },
+    )
+}
+
+pub(crate) fn default_new_span<S>(
+    span: &SpanRef<S>,
+    parent: Option<&protocol::Span>,
+    attrs: &Attributes,
+) -> protocol::Span
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    let trace_id = parent
+        .map(|parent| parent.trace_id.clone())
+        .unwrap_or_else(Uuid::new_v4);
+
+    let mut result = FieldVisitorResult::default();
+
+    let mut visitor = FieldVisitor::new(
+        FieldVisitorConfig {
+            #[cfg(features = "strip-ansi-escapes")]
+            strip_ansi_escapes: true,
+            event_type_field: None,
+        },
+        &mut result,
+    );
+
+    attrs.record(&mut visitor);
+
+    protocol::Span {
+        span_id: Uuid::new_v4(),
+        trace_id,
+        op: Some(span.name().into()),
+        description: result.event_type,
+        data: result.json_values,
+        status: if result.expections.is_empty() {
+            Some(String::from("ok"))
+        } else {
+            Some(String::from("internal_error"))
+        },
+        ..protocol::Span::default()
+    }
+}
+
+pub(crate) fn default_on_close(span: &mut protocol::Span, timings: Timings) {
+    span.data
+        .insert(String::from("busy"), Value::Number(timings.busy.into()));
+
+    span.data
+        .insert(String::from("idle"), Value::Number(timings.idle.into()));
+
+    span.timestamp = Some(timings.end_time.into());
+}
+
+pub(crate) fn default_convert_transaction<S>(
+    trace_id: Uuid,
+    span: &SpanRef<S>,
+    spans: Vec<protocol::Span>,
+    timings: Timings,
+) -> Transaction<'static>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    Transaction {
+        event_id: trace_id,
+        name: Some(span.name().into()),
+        start_timestamp: timings.start_time.into(),
+        timestamp: Some(timings.end_time.into()),
+        spans,
+        ..Transaction::default()
+    }
 }

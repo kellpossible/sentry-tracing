@@ -1,20 +1,13 @@
 use std::{
     cmp::max,
-    mem::swap,
     time::{Instant, SystemTime},
 };
 
-use crate::{
-    converters::{
-        breadcrumb_from_event, convert_tracing_event, FieldVisitor, FieldVisitorConfig,
-        FieldVisitorResult,
-    },
-    TracingIntegrationOptions,
-};
+use crate::TracingIntegrationOptions;
 
 use sentry_core::{
     add_breadcrumb, capture_event,
-    protocol::{self, Transaction, Value},
+    protocol::{self, Breadcrumb, Transaction},
     types::Uuid,
     Envelope, Hub,
 };
@@ -27,9 +20,9 @@ use tracing_subscriber::{
 
 /// Provides a dispatching logger.
 pub struct SentryLayer<S> {
-    span_layer: Layered<EnvFilter, SpanLayer, S>,
-    event_layer: Layered<EnvFilter, EventLayer, S>,
-    breadcrumb_layer: Layered<EnvFilter, BreadcrumbLayer, S>,
+    span_layer: Layered<EnvFilter, SpanLayer<S>, S>,
+    event_layer: Layered<EnvFilter, EventLayer<S>, S>,
+    breadcrumb_layer: Layered<EnvFilter, BreadcrumbLayer<S>, S>,
 }
 
 impl<S> SentryLayer<S>
@@ -37,22 +30,17 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     /// Create a new layer instance with the specified options
-    pub fn new(options: TracingIntegrationOptions) -> Self {
+    pub fn new(options: TracingIntegrationOptions<S>) -> Self {
         let span_layer = SpanLayer {
-            #[cfg(features = "strip-ansi-escapes")]
-            strip_ansi_escapes: options.strip_ansi_escapes,
-            event_type_field: options.event_type_field.clone(),
+            new_span: options.new_span,
+            on_close: options.on_close,
+            convert_transaction: options.convert_transaction,
         };
         let event_layer = EventLayer {
-            #[cfg(features = "strip-ansi-escapes")]
-            strip_ansi_escapes: options.strip_ansi_escapes,
-            attach_stacktraces: options.attach_stacktraces,
-            event_type_field: options.event_type_field.clone(),
+            convert_event: options.convert_event,
         };
         let breadcrumb_layer = BreadcrumbLayer {
-            #[cfg(features = "strip-ansi-escapes")]
-            strip_ansi_escapes: options.strip_ansi_escapes,
-            event_type_field: options.event_type_field,
+            convert_breadcrumb: options.convert_breadcrumb,
         };
 
         SentryLayer {
@@ -218,14 +206,24 @@ where
     }
 }
 
+pub type NewSpan<S> = Box<
+    dyn Fn(&SpanRef<S>, Option<&protocol::Span>, &span::Attributes) -> protocol::Span + Send + Sync,
+>;
+
+pub type OnClose = Box<dyn Fn(&mut protocol::Span, Timings) + Send + Sync>;
+
+pub type ConvertTransaction<S> = Box<
+    dyn Fn(Uuid, &SpanRef<S>, Vec<protocol::Span>, Timings) -> Transaction<'static> + Send + Sync,
+>;
+
 /// The event layer sends all the spans it receives to Sentry as transactions
-struct SpanLayer {
-    #[cfg(features = "strip-ansi-escapes")]
-    strip_ansi_escapes: bool,
-    event_type_field: Option<String>,
+struct SpanLayer<S> {
+    new_span: NewSpan<S>,
+    on_close: OnClose,
+    convert_transaction: ConvertTransaction<S>,
 }
 
-impl<S> Layer<S> for SpanLayer
+impl<S> Layer<S> for SpanLayer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -235,18 +233,20 @@ where
 
         // TODO: implement sampling rate
         if extensions.get_mut::<Trace>().is_none() {
-            let mut trace = Trace::new(&span);
-            let mut visitor = FieldVisitor::new(
-                FieldVisitorConfig {
-                    #[cfg(features = "strip-ansi-escapes")]
-                    strip_ansi_escapes: self.strip_ansi_escapes,
-                    event_type_field: self.event_type_field.as_deref(),
-                },
-                &mut trace.visitor,
-            );
+            for parent in span.parents() {
+                let parent = parent.extensions();
+                let parent = match parent.get::<Trace>() {
+                    Some(trace) => trace,
+                    None => continue,
+                };
 
-            attrs.record(&mut visitor);
-            extensions.insert(trace);
+                let span = (self.new_span)(&span, Some(&parent.span), attrs);
+                extensions.insert(Trace::new(span));
+                return;
+            }
+
+            let span = (self.new_span)(&span, None, attrs);
+            extensions.insert(Trace::new(span));
         }
     }
 
@@ -278,144 +278,94 @@ where
         let span = ctx.span(&id).expect("Span not found, this is a bug");
         let mut extensions = span.extensions_mut();
 
-        let trace = match extensions.get_mut::<Trace>() {
+        let mut trace = match extensions.remove::<Trace>() {
             Some(trace) => trace,
             None => return,
         };
 
-        let name: String = span.name().into();
-        let span_id = trace.span_id;
-        let trace_id = trace.trace_id;
+        trace.idle += (Instant::now() - trace.last).as_nanos() as u64;
 
-        let busy = trace.busy;
-        let mut idle = trace.idle;
-        let first = trace.first;
-        let last = trace.last;
-        let last_sys = trace.last_sys;
-
-        idle += (Instant::now() - last).as_nanos() as u64;
-
-        let mut visitor = FieldVisitorResult::default();
-        let mut spans = Vec::new();
-
-        swap(&mut visitor, &mut trace.visitor);
-        swap(&mut spans, &mut trace.spans);
-
-        visitor
-            .json_values
-            .insert(String::from("busy"), Value::Number(busy.into()));
-        visitor
-            .json_values
-            .insert(String::from("idle"), Value::Number(idle.into()));
-
-        let mut span_data = protocol::Span {
-            span_id,
-            trace_id,
-            op: Some(name.clone()),
-            description: visitor.event_type,
-            start_timestamp: first.into(),
-            timestamp: Some(last_sys.into()),
-            data: visitor.json_values,
-            // TODO: propagate error status from child span / event ?
-            // TODO: extract status from error object ?
-            status: if visitor.expections.is_empty() {
-                Some(String::from("ok"))
-            } else {
-                Some(String::from("internal_error"))
-            },
-            ..protocol::Span::default()
+        let timings = Timings {
+            start_time: trace.first,
+            end_time: trace.last_sys,
+            idle: trace.idle,
+            busy: trace.busy,
         };
+
+        (self.on_close)(&mut trace.span, timings);
 
         // Traverse the parents of this span to attach to the nearest one
         // that has tracing data (spans ignored by the span_filter do not)
         for parent in span.parents() {
             let mut extensions = parent.extensions_mut();
             if let Some(parent) = extensions.get_mut::<Trace>() {
-                parent.spans.extend(spans);
+                parent.spans.extend(trace.spans);
 
-                span_data.parent_span_id = Some(parent.span_id.to_simple_ref().to_string());
-                parent.spans.push(span_data);
+                let span_id = parent.span.span_id.to_simple_ref().to_string();
+                trace.span.parent_span_id = Some(span_id[..16].into());
+                parent.spans.push(trace.span);
                 return;
             }
         }
 
         // If no parent was found, consider this span a
         // transaction root and submit it to Sentry
+        let span = &span;
         Hub::with_active(move |hub| {
-            let mut envelope = Envelope::new();
-            envelope.add_item(Transaction {
-                event_id: trace_id,
-                name: Some(name),
-                start_timestamp: first.into(),
-                timestamp: Some(last_sys.into()),
-                spans,
-                ..Transaction::default()
-            });
-
-            let client = hub.client().unwrap();
-            client.send_envelope(envelope);
+            let transaction =
+                (self.convert_transaction)(trace.span.trace_id, span, trace.spans, timings);
+            let envelope = Envelope::from(transaction);
+            hub.client().unwrap().send_envelope(envelope);
         });
     }
 }
 
+pub type ConvertEvent<S> =
+    Box<dyn for<'a> Fn(&Event<'a>, Context<'a, S>) -> protocol::Event<'static> + Send + Sync>;
+
 /// The event layer sends all the events it receives to Sentry as events
-struct EventLayer {
-    #[cfg(features = "strip-ansi-escapes")]
-    strip_ansi_escapes: bool,
-    attach_stacktraces: bool,
-    event_type_field: Option<String>,
+struct EventLayer<S> {
+    convert_event: ConvertEvent<S>,
 }
 
-impl<S> Layer<S> for EventLayer
+impl<S> Layer<S> for EventLayer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     /// Notifies this layer that an event has occurred.
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        capture_event(convert_tracing_event(
-            event,
-            ctx,
-            self.attach_stacktraces,
-            FieldVisitorConfig {
-                #[cfg(features = "strip-ansi-escapes")]
-                strip_ansi_escapes: self.strip_ansi_escapes,
-                event_type_field: self.event_type_field.as_deref(),
-            },
-        ));
+        capture_event((self.convert_event)(event, ctx));
     }
 }
 
+pub type ConvertBreadcrumb<S> =
+    Box<dyn for<'a> Fn(&Event<'a>, Context<'a, S>) -> Breadcrumb + Send + Sync>;
+
 /// The breadcrumb layer sends all the events it receives to Sentry as breadcrumbs
-struct BreadcrumbLayer {
-    #[cfg(features = "strip-ansi-escapes")]
-    strip_ansi_escapes: bool,
-    event_type_field: Option<String>,
+struct BreadcrumbLayer<S> {
+    convert_breadcrumb: ConvertBreadcrumb<S>,
 }
 
-impl<S> Layer<S> for BreadcrumbLayer
+impl<S> Layer<S> for BreadcrumbLayer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     /// Notifies this layer that an event has occurred.
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        add_breadcrumb(|| {
-            breadcrumb_from_event(
-                event,
-                FieldVisitorConfig {
-                    #[cfg(features = "strip-ansi-escapes")]
-                    strip_ansi_escapes: self.strip_ansi_escapes,
-                    event_type_field: self.event_type_field.as_deref(),
-                },
-            )
-        });
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        add_breadcrumb(|| (self.convert_breadcrumb)(event, ctx));
     }
 }
 
-pub(crate) struct Trace {
-    pub(crate) span_id: Uuid,
-    pub(crate) trace_id: Uuid,
+#[derive(Clone, Copy, Debug)]
+pub struct Timings {
+    pub start_time: SystemTime,
+    pub end_time: SystemTime,
+    pub busy: u64,
+    pub idle: u64,
+}
 
-    visitor: FieldVisitorResult,
+pub(crate) struct Trace {
+    pub(crate) span: protocol::Span,
     spans: Vec<protocol::Span>,
 
     // From the tracing-subscriber implementation of span timings,
@@ -429,24 +379,9 @@ pub(crate) struct Trace {
 }
 
 impl Trace {
-    fn new<R>(span: &SpanRef<R>) -> Self
-    where
-        R: for<'a> LookupSpan<'a>,
-    {
-        let trace_id = span
-            .parent()
-            .and_then(|parent| {
-                let extensions = parent.extensions();
-                let trace = extensions.get::<Trace>()?;
-                Some(trace.trace_id.clone())
-            })
-            .unwrap_or_else(Uuid::new_v4);
-
+    fn new(span: protocol::Span) -> Self {
         Trace {
-            span_id: Uuid::new_v4(),
-            trace_id,
-
-            visitor: FieldVisitorResult::default(),
+            span,
             spans: Vec::new(),
 
             idle: 0,
