@@ -8,7 +8,6 @@ use crate::TracingIntegrationOptions;
 use sentry_core::{
     add_breadcrumb, capture_event,
     protocol::{self, Breadcrumb, Transaction},
-    types::Uuid,
     Envelope, Hub,
 };
 use tracing::{metadata::LevelFilter, span, subscriber::Interest, Event, Subscriber};
@@ -213,7 +212,9 @@ pub type NewSpan<S> = Box<
 pub type OnClose = Box<dyn Fn(&mut protocol::Span, Timings) + Send + Sync>;
 
 pub type ConvertTransaction<S> = Box<
-    dyn Fn(Uuid, &SpanRef<S>, Vec<protocol::Span>, Timings) -> Transaction<'static> + Send + Sync,
+    dyn Fn(protocol::Span, &SpanRef<S>, Vec<protocol::Span>, Timings) -> Transaction<'static>
+        + Send
+        + Sync,
 >;
 
 /// The event layer sends all the spans it receives to Sentry as transactions
@@ -233,7 +234,7 @@ where
 
         // TODO: implement sampling rate
         if extensions.get_mut::<Trace>().is_none() {
-            for parent in span.parents() {
+            for parent in span.parent().into_iter().flat_map(|span| span.scope()) {
                 let parent = parent.extensions();
                 let parent = match parent.get::<Trace>() {
                     Some(trace) => trace,
@@ -296,7 +297,7 @@ where
 
         // Traverse the parents of this span to attach to the nearest one
         // that has tracing data (spans ignored by the span_filter do not)
-        for parent in span.parents() {
+        for parent in span.parent().into_iter().flat_map(|span| span.scope()) {
             let mut extensions = parent.extensions_mut();
             if let Some(parent) = extensions.get_mut::<Trace>() {
                 parent.spans.extend(trace.spans);
@@ -312,8 +313,7 @@ where
         // transaction root and submit it to Sentry
         let span = &span;
         Hub::with_active(move |hub| {
-            let transaction =
-                (self.convert_transaction)(trace.span.trace_id, span, trace.spans, timings);
+            let transaction = (self.convert_transaction)(trace.span, span, trace.spans, timings);
             let envelope = Envelope::from(transaction);
             hub.client().unwrap().send_envelope(envelope);
         });

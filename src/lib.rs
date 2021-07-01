@@ -23,6 +23,10 @@ mod converters;
 mod integration;
 mod layer;
 
-pub use converters::{breadcrumb_from_event, convert_tracing_event, FieldVisitorConfig};
+pub use converters::{
+    breadcrumb_from_event, convert_tracing_event, default_convert_breadcrumb,
+    default_convert_event, default_convert_transaction, default_new_span, default_on_close,
+    FieldVisitorConfig,
+};
 pub use integration::{TracingIntegration, TracingIntegrationOptions};
 pub use layer::SentryLayer;

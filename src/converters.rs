@@ -177,7 +177,7 @@ pub fn breadcrumb_from_event(
     }
 }
 
-pub(crate) fn default_convert_breadcrumb<S>(
+pub fn default_convert_breadcrumb<S>(
     event: &tracing::Event<'_>,
     _ctx: Context<S>,
 ) -> Breadcrumb {
@@ -248,14 +248,19 @@ where
             });
 
             result.contexts.insert(context.type_name().into(), context);
-            result.transaction = parent.parents().last().map(|root| root.name().into());
+            result.transaction = parent
+                .parent()
+                .into_iter()
+                .flat_map(|span| span.scope())
+                .last()
+                .map(|root| root.name().into());
         }
     }
 
     result
 }
 
-pub(crate) fn default_convert_event<S>(
+pub fn default_convert_event<S>(
     event: &tracing::Event<'_>,
     ctx: Context<S>,
 ) -> Event<'static>
@@ -274,7 +279,7 @@ where
     )
 }
 
-pub(crate) fn default_new_span<S>(
+pub fn default_new_span<S>(
     span: &SpanRef<S>,
     parent: Option<&protocol::Span>,
     attrs: &Attributes,
@@ -314,7 +319,7 @@ where
     }
 }
 
-pub(crate) fn default_on_close(span: &mut protocol::Span, timings: Timings) {
+pub fn default_on_close(span: &mut protocol::Span, timings: Timings) {
     span.data
         .insert(String::from("busy"), Value::Number(timings.busy.into()));
 
@@ -324,21 +329,36 @@ pub(crate) fn default_on_close(span: &mut protocol::Span, timings: Timings) {
     span.timestamp = Some(timings.end_time.into());
 }
 
-pub(crate) fn default_convert_transaction<S>(
-    trace_id: Uuid,
-    span: &SpanRef<S>,
+pub fn default_convert_transaction<S>(
+    sentry_span: protocol::Span,
+    tracing_span: &SpanRef<S>,
     spans: Vec<protocol::Span>,
     timings: Timings,
 ) -> Transaction<'static>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
+    let mut contexts = BTreeMap::new();
+
+    contexts.insert(
+        String::from("trace"),
+        protocol::Context::Trace(Box::new(TraceContext {
+            span_id: sentry_span.span_id,
+            trace_id: sentry_span.trace_id,
+            parent_span_id: sentry_span.parent_span_id,
+            op: sentry_span.op.clone(),
+            description: sentry_span.description.clone(),
+            status: sentry_span.status.clone(),
+        })),
+    );
+
     Transaction {
-        event_id: trace_id,
-        name: Some(span.name().into()),
+        event_id: sentry_span.trace_id,
+        transaction: Some(tracing_span.name().into()),
         start_timestamp: timings.start_time.into(),
         timestamp: Some(timings.end_time.into()),
         spans,
+        contexts,
         ..Transaction::default()
     }
 }
